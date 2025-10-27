@@ -5,6 +5,7 @@ from mediapipe.tasks import python
 from mediapipe.tasks.python import vision
 import os
 import tempfile
+import platform
 from typing import Dict, Tuple
 
 # Define colors for each segmentation category
@@ -35,41 +36,46 @@ class VideoProcessor:
 
     def _initialize_segmenter(self):
         """Initialize the MediaPipe ImageSegmenter."""
-        base_options = python.BaseOptions(model_asset_path=self.model_path)
+        if platform.system() == "Linux":
+            base_options = python.BaseOptions(
+                model_asset_path=self.model_path,
+                delegate=python.BaseOptions.Delegate.GPU
+            )
+        else:
+            base_options = python.BaseOptions(model_asset_path=self.model_path)
+        
         options = vision.ImageSegmenterOptions(
             base_options=base_options,
             output_category_mask=True
         )
         self.segmenter = vision.ImageSegmenter.create_from_options(options)
 
-    def apply_segmentation_colors(self, frame: np.ndarray, category_mask: np.ndarray) -> np.ndarray:
+    def apply_segmentation_blur(self, frame: np.ndarray, category_mask: np.ndarray) -> np.ndarray:
         """
-        Apply colors to the frame based on segmentation categories.
+        Apply a blur effect to the frame, keeping hair and face-skin sharp.
 
         Args:
             frame: Input frame (BGR format)
             category_mask: Segmentation mask from the model
 
         Returns:
-            Processed frame with applied colors
+            Processed frame with blur effect.
         """
-        # Create output image
-        output_image = np.zeros_like(frame)
+        # Categories to keep sharp: 1 for hair, 3 for face-skin
+        sharp_categories = [1, 3]
 
-        # Apply colors for each category
-        for category_id, color in CATEGORY_COLORS.items():
-            # Create mask for current category
-            mask = (category_mask == category_id)
+        # Create a mask for the sharp categories
+        sharp_mask = np.isin(category_mask, sharp_categories)
 
-            # Apply color to pixels belonging to this category
-            if category_id == 0:  # background - keep original or make transparent
-                # For background, you might want to keep original or apply a specific effect
-                output_image[mask] = frame[mask] * 0.3  # Darken background
-            else:
-                # Apply solid color for foreground categories
-                output_image[mask] = color
+        # Create a heavily blurred version of the frame
+        blurred_frame = cv2.GaussianBlur(frame, (151, 151), 0)
 
-        return output_image
+        # Combine the sharp and blurred parts
+        # We need to expand the mask's dimensions to match the frame's 3 channels
+        sharp_mask_3d = np.stack([sharp_mask] * 3, axis=-1)
+        output_frame = np.where(sharp_mask_3d, frame, blurred_frame)
+
+        return output_frame
 
     def process_frame(self, frame: np.ndarray) -> np.ndarray:
         """
@@ -91,8 +97,8 @@ class VideoProcessor:
         segmentation_result = self.segmenter.segment(mp_image)
         category_mask = segmentation_result.category_mask
 
-        # Apply colors based on segmentation
-        processed_frame = self.apply_segmentation_colors(frame, category_mask.numpy_view())
+        # Apply blur based on segmentation
+        processed_frame = self.apply_segmentation_blur(frame, category_mask.numpy_view())
 
         return processed_frame
 
